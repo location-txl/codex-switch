@@ -55,6 +55,10 @@ export function createState(): string {
   return base64UrlEncode(crypto.randomBytes(32));
 }
 
+export function getBrowserOAuthRedirectUri(callbackPort: number = DEFAULT_OPENAI_CALLBACK_PORT): string {
+  return `http://localhost:${callbackPort}/auth/callback`;
+}
+
 export function buildAuthorizeUrl(input: {
   issuer?: string;
   clientId?: string;
@@ -68,14 +72,12 @@ export function buildAuthorizeUrl(input: {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", input.redirectUri);
-  url.searchParams.set(
-    "scope",
-    "openid profile email offline_access api.connectors.read api.connectors.invoke",
-  );
+  url.searchParams.set("scope", "openid profile email offline_access");
   url.searchParams.set("code_challenge", input.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("id_token_add_organizations", "true");
   url.searchParams.set("codex_cli_simplified_flow", "true");
+  url.searchParams.set("originator", "codex_cli_rs");
   url.searchParams.set("state", input.state);
   return url.toString();
 }
@@ -314,14 +316,14 @@ async function openInBrowser(url: string): Promise<boolean> {
   return false;
 }
 
-async function startOAuthCallbackServer(
+export async function startOAuthCallbackServer(
   input: {
     issuer?: string;
     clientId?: string;
     callbackPort?: number;
     openBrowser?: boolean;
   },
-): Promise<{ code: string; redirectUri: string }> {
+): Promise<{ code: string; redirectUri: string; codeVerifier: string }> {
   const issuer = input.issuer || DEFAULT_OPENAI_ISSUER;
   const clientId = input.clientId || DEFAULT_OPENAI_CLIENT_ID;
   const callbackPort = input.callbackPort ?? DEFAULT_OPENAI_CALLBACK_PORT;
@@ -330,18 +332,22 @@ async function startOAuthCallbackServer(
 
   const server = http.createServer();
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
+    const onError = (error: Error & { code?: string }) => {
+      server.off("error", onError);
+      if (error.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `OAuth 回调端口 ${callbackPort} 已被占用，请先关闭占用该端口的程序后重试`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    };
+    server.once("error", onError);
     server.listen(callbackPort, "127.0.0.1", () => {
-      server.off("error", reject);
+      server.off("error", onError);
       resolve();
-    });
-  }).catch(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve();
-      });
     });
   });
 
@@ -350,7 +356,7 @@ async function startOAuthCallbackServer(
     throw new Error("无法启动本地 OAuth 回调服务");
   }
 
-  const redirectUri = `http://127.0.0.1:${address.port}/auth/callback`;
+  const redirectUri = getBrowserOAuthRedirectUri(address.port);
   const authUrl = buildAuthorizeUrl({
     issuer,
     clientId,
@@ -419,84 +425,20 @@ async function startOAuthCallbackServer(
     undefined,
   );
 
-  return { code, redirectUri };
+  return { code, redirectUri, codeVerifier: pkce.verifier };
 }
 
 export async function runOpenAiBrowserLogin(options: OpenAiOAuthOptions = {}): Promise<OAuthTokens> {
+  const { code, redirectUri, codeVerifier } = await startOAuthCallbackServer(options);
   const issuer = options.issuer || DEFAULT_OPENAI_ISSUER;
   const clientId = options.clientId || DEFAULT_OPENAI_CLIENT_ID;
-  const callbackPort = options.callbackPort ?? DEFAULT_OPENAI_CALLBACK_PORT;
-  const pkce = createPkcePair();
-  const state = createState();
-
-  const server = http.createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(callbackPort, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  }).catch(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
-  });
-
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("无法启动本地 OAuth 回调服务");
-  }
-
-  const redirectUri = `http://127.0.0.1:${address.port}/auth/callback`;
-  const authUrl = buildAuthorizeUrl({
-    issuer,
-    clientId,
-    redirectUri,
-    codeChallenge: pkce.challenge,
-    state,
-  });
-
-  if (options.openBrowser !== false) {
-    const opened = await openInBrowser(authUrl);
-    if (!opened) {
-      process.stderr.write(`无法自动打开浏览器，请手动访问：${authUrl}\n`);
-    }
-  } else {
-    process.stderr.write(`请在浏览器打开：${authUrl}\n`);
-  }
-
-  const code = await new Promise<string>((resolve, reject) => {
-    server.on("request", (req, res) => {
-      const requestUrl = req.url || "/";
-      try {
-        const parsed = parseBrowserCallback(requestUrl, state);
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.end("<html><body><h1>登录成功</h1><p>可以关闭这个页面了。</p></body></html>");
-        resolve(parsed.code);
-      } catch (error) {
-        res.statusCode = 400;
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.end(
-          `<html><body><h1>登录失败</h1><p>${String((error as Error).message)}</p></body></html>`,
-        );
-        reject(error);
-      } finally {
-        server.close();
-      }
-    });
-  });
 
   const tokens = await exchangeCodeForTokens(fetch, {
     issuer,
     clientId,
     redirectUri,
     code,
-    codeVerifier: pkce.verifier,
+    codeVerifier,
   });
 
   let openaiApiKey: string | null = null;
