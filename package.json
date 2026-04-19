@@ -5,13 +5,14 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "codex-switch": "./dist/cli.js"
+    "codex-switch": "./dist/src/cli.js"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
