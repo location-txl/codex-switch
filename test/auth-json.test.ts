@@ -39,6 +39,33 @@ describe("auth-json", () => {
     expect(parsed.auth_mode).toBe("chatgpt");
     expect(parsed.tokens.account_id).toBe("acct_123");
   });
+
+  it("id_token 缺少 account_id 时回退使用 access_token", async () => {
+    const home = tempHome();
+    const idToken = createJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_plan_type: "plus",
+      },
+    });
+    const accessToken = createJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_from_access",
+      },
+    });
+
+    await writeChatgptAuthJson(
+      {
+        idToken,
+        accessToken,
+        refreshToken: "ref",
+      },
+      home,
+    );
+
+    const raw = await fs.readFile(path.join(home, "auth.json"), "utf8");
+    const parsed = JSON.parse(raw) as { tokens: { account_id: string } };
+    expect(parsed.tokens.account_id).toBe("acct_from_access");
+  });
 });
 
 function tempHome(): string {

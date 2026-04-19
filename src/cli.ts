@@ -9,12 +9,14 @@ import { runTokenCommand } from "./token-command.js";
 import { isProviderIdValid, maskSecret, getCodexHome } from "./utils.js";
 import { clearConfiguredCodexHome, readConfiguredCodexHomeSync, writeConfiguredCodexHome } from "./app-config.js";
 
-interface ParsedArgs {
+export interface ParsedArgs {
   positionals: string[];
   flags: Map<string, string | boolean>;
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+const BOOLEAN_FLAGS = new Set(["--debug", "--browser", "--device"]);
+
+export function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
   const flags = new Map<string, string | boolean>();
 
@@ -28,6 +30,11 @@ function parseArgs(argv: string[]): ParsedArgs {
     const [flag, inlineValue] = item.split("=", 2);
     if (inlineValue !== undefined) {
       flags.set(flag, inlineValue);
+      continue;
+    }
+
+    if (BOOLEAN_FLAGS.has(flag)) {
+      flags.set(flag, true);
       continue;
     }
 
@@ -73,6 +80,7 @@ function printHelp(): void {
       "",
       "全局选项：",
       "  --codex-home <path>    仅当前命令覆盖 Codex 配置目录",
+      "  --debug                输出脱敏后的详细调试日志",
       "",
     ].join("\n"),
   );
@@ -200,14 +208,15 @@ async function handleLogin(parsed: ParsedArgs, codexHome?: string): Promise<void
     getStringFlag(parsed.flags, "--experimental-client-id") || DEFAULT_OPENAI_CLIENT_ID;
   const device = hasFlag(parsed.flags, "--device");
   const browser = hasFlag(parsed.flags, "--browser");
+  const debug = hasFlag(parsed.flags, "--debug");
 
   if (device && browser) {
     throw new Error("--browser 与 --device 不能同时使用");
   }
 
   const result = device
-    ? await runOpenAiDeviceLogin({ issuer, clientId, codexHome })
-    : await runOpenAiBrowserLogin({ issuer, clientId, codexHome });
+    ? await runOpenAiDeviceLogin({ issuer, clientId, codexHome, debug })
+    : await runOpenAiBrowserLogin({ issuer, clientId, codexHome, debug });
   await setCurrentProviderToOpenAI(codexHome);
 
   process.stdout.write(
@@ -253,8 +262,8 @@ async function handleHome(parsed: ParsedArgs): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2));
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const parsed = parseArgs(argv);
   const command = parsed.positionals[0];
   const codexHome = getStringFlag(parsed.flags, "--codex-home") || undefined;
 
@@ -303,7 +312,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`错误：${(error as Error).message}\n`);
-  process.exitCode = 1;
-});
+const isMainModule = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+
+if (isMainModule) {
+  main().catch((error) => {
+    process.stderr.write(`错误：${(error as Error).message}\n`);
+    process.exitCode = 1;
+  });
+}

@@ -1,4 +1,10 @@
-import { atomicWriteFile, getCodexAuthPath, parseJwtClaims, readFileIfExists } from "./utils.js";
+import {
+  atomicWriteFile,
+  getCodexAuthPath,
+  getNestedRecord,
+  parseJwtClaims,
+  readFileIfExists,
+} from "./utils.js";
 
 export interface LegacyApiKeyAuthJson {
   OPENAI_API_KEY?: string;
@@ -38,6 +44,13 @@ export function getLegacyApiKey(auth: AuthJson | null): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function getChatgptAccountIdFromJwt(jwt: string): string | null {
+  const claims = parseJwtClaims(jwt);
+  const authClaims = getNestedRecord(claims, "https://api.openai.com/auth");
+  const accountId = authClaims?.chatgpt_account_id;
+  return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
+}
+
 export async function writeChatgptAuthJson(
   input: {
     idToken: string;
@@ -47,12 +60,8 @@ export async function writeChatgptAuthJson(
   },
   codexHome?: string,
 ): Promise<ChatgptAuthJson> {
-  const claims = parseJwtClaims(input.idToken);
-  const authClaims = claims["https://api.openai.com/auth"];
-  const accountId =
-    authClaims && typeof authClaims === "object"
-      ? ((authClaims as Record<string, unknown>).chatgpt_account_id as string | undefined)
-      : undefined;
+  const accountId = getChatgptAccountIdFromJwt(input.idToken) ||
+    getChatgptAccountIdFromJwt(input.accessToken);
 
   const next: ChatgptAuthJson = {
     auth_mode: "chatgpt",
@@ -61,7 +70,7 @@ export async function writeChatgptAuthJson(
       id_token: input.idToken,
       access_token: input.accessToken,
       refresh_token: input.refreshToken,
-      account_id: accountId ?? null,
+      account_id: accountId,
     },
     last_refresh: new Date().toISOString(),
     agent_identity: null,
