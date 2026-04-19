@@ -1,0 +1,15 @@
+export const DEFAULT_CODEX_HOME_DIRNAME = ".codex";
+export const APP_CONFIG_BASENAME = ".codex-switch.json";
+export const PROVIDER_STORE_BASENAME = "codex-switch.providers.json";
+export const CONFIG_BASENAME = "config.toml";
+export const AUTH_BASENAME = "auth.json";
+export const DEFAULT_OPENAI_ISSUER = "https://auth.openai.com";
+export const DEFAULT_OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+export const DEFAULT_OPENAI_CALLBACK_PORT = 1455;
+export const DEFAULT_OPENAI_PROVIDER = "openai";
+export const RESERVED_PROVIDER_IDS = new Set(["openai", "ollama", "lmstudio"]);
+export const MANAGED_BLOCK_START = "# codex-switch:start:";
+export const MANAGED_BLOCK_END = "# codex-switch:end:";
+export const DEVICE_CODE_TIMEOUT_MS = 15 * 60 * 1000;
+export const TOKEN_POLL_TIMEOUT_MS = 5_000;
+export const DEVICE_POLL_DEFAULT_INTERVAL_SEC = 5;

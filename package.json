@@ -1,0 +1,23 @@
+{
+  "name": "codex-switch",
+  "version": "0.1.0",
+  "description": "本地 CLI：切换 Codex 模型提供商并管理 OpenAI OAuth",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "codex-switch": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
