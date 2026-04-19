@@ -10,7 +10,7 @@ import {
   DEVICE_CODE_TIMEOUT_MS,
   DEVICE_POLL_DEFAULT_INTERVAL_SEC,
 } from "./constants.js";
-import { writeChatgptAuthJson } from "./auth-json.js";
+import { persistOpenAiAuth, readSwitchAuthJson } from "./auth-json.js";
 import { base64UrlEncode, getNestedRecord, parseJwtClaims, sleep } from "./utils.js";
 
 export interface OAuthTokens {
@@ -27,6 +27,16 @@ export interface OpenAiOAuthOptions {
   codexHome?: string;
   openBrowser?: boolean;
   debug?: boolean;
+}
+
+export interface StoredOpenAiAuth {
+  issuer: string;
+  clientId: string;
+  idToken: string;
+  accessToken: string;
+  refreshToken: string;
+  openaiApiKey: string | null;
+  lastRefresh: string | null;
 }
 
 export interface DeviceCodePrompt {
@@ -268,6 +278,51 @@ export async function exchangeCodeForTokens(
     idToken: data.id_token,
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
+  };
+}
+
+export async function refreshTokens(
+  fetchImpl: FetchLike,
+  input: {
+    issuer?: string;
+    clientId?: string;
+    refreshToken: string;
+    debug?: boolean;
+  },
+): Promise<Omit<OAuthTokens, "openaiApiKey">> {
+  const issuer = input.issuer || DEFAULT_OPENAI_ISSUER;
+  const clientId = input.clientId || DEFAULT_OPENAI_CLIENT_ID;
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: input.refreshToken,
+    client_id: clientId,
+  });
+
+  const response = await debugFetch(fetchImpl, input.debug, new URL("/oauth/token", issuer), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  }, "refresh token");
+
+  if (!response.ok) {
+    throw new Error(`refresh token 失败：HTTP ${response.status}`);
+  }
+
+  const data = (await response.json()) as {
+    id_token?: string;
+    access_token?: string;
+    refresh_token?: string;
+  };
+  if (!data.id_token || !data.access_token) {
+    throw new Error("refresh token 返回了不完整的 token");
+  }
+
+  return {
+    idToken: data.id_token,
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || input.refreshToken,
   };
 }
 
@@ -531,13 +586,13 @@ export async function runOpenAiBrowserLogin(
   deps: {
     fetchImpl?: FetchLike;
     startCallbackServer?: typeof startOAuthCallbackServer;
-    writeAuthJson?: typeof writeChatgptAuthJson;
+    persistAuth?: typeof persistOpenAiAuth;
   } = {},
 ): Promise<OAuthTokens> {
   debugLog(options.debug, "进入 browser 登录流程");
   const fetchImpl = deps.fetchImpl ?? fetch;
   const startCallbackServer = deps.startCallbackServer ?? startOAuthCallbackServer;
-  const writeAuthJson = deps.writeAuthJson ?? writeChatgptAuthJson;
+  const persistAuth = deps.persistAuth ?? persistOpenAiAuth;
   const { code, redirectUri, codeVerifier } = await startCallbackServer(options);
   const issuer = options.issuer || DEFAULT_OPENAI_ISSUER;
   const clientId = options.clientId || DEFAULT_OPENAI_CLIENT_ID;
@@ -559,8 +614,10 @@ export async function runOpenAiBrowserLogin(
   });
 
   const result: OAuthTokens = { ...tokens, openaiApiKey };
-  await writeAuthJson(
+  await persistAuth(
     {
+      issuer,
+      clientId,
       idToken: result.idToken,
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
@@ -575,13 +632,13 @@ export async function runOpenAiDeviceLogin(
   options: OpenAiOAuthOptions = {},
   deps: {
     fetchImpl?: FetchLike;
-    writeAuthJson?: typeof writeChatgptAuthJson;
+    persistAuth?: typeof persistOpenAiAuth;
   } = {},
 ): Promise<OAuthTokens> {
   const issuer = options.issuer || DEFAULT_OPENAI_ISSUER;
   const clientId = options.clientId || DEFAULT_OPENAI_CLIENT_ID;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const writeAuthJson = deps.writeAuthJson ?? writeChatgptAuthJson;
+  const persistAuth = deps.persistAuth ?? persistOpenAiAuth;
   debugLog(options.debug, "进入 device 登录流程");
 
   const prompt = await requestDeviceCode(fetchImpl, { issuer, clientId, debug: options.debug });
@@ -616,8 +673,10 @@ export async function runOpenAiDeviceLogin(
   });
 
   const result: OAuthTokens = { ...tokens, openaiApiKey };
-  await writeAuthJson(
+  await persistAuth(
     {
+      issuer,
+      clientId,
       idToken: result.idToken,
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
@@ -626,4 +685,66 @@ export async function runOpenAiDeviceLogin(
     options.codexHome,
   );
   return result;
+}
+
+export async function refreshStoredOpenAiAuth(
+  options: { codexHome?: string; switchHome?: string; debug?: boolean } = {},
+  deps: {
+    fetchImpl?: FetchLike;
+    persistAuth?: typeof persistOpenAiAuth;
+  } = {},
+): Promise<StoredOpenAiAuth> {
+  const auth = await readSwitchAuthJson(options.switchHome);
+  if (!auth || typeof auth !== "object" || !("tokens" in auth)) {
+    throw new Error("未找到 OpenAI 登录态，请先执行 login openai");
+  }
+
+  const tokens = auth.tokens;
+  if (!tokens?.refresh_token) {
+    throw new Error("OpenAI 登录态缺少 refresh_token，请重新执行 login openai");
+  }
+  const existingApiKey = typeof auth.openai_api_key === "string" ? auth.openai_api_key : null;
+
+  const issuer = auth.issuer || DEFAULT_OPENAI_ISSUER;
+  const clientId = auth.client_id || DEFAULT_OPENAI_CLIENT_ID;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const persistAuth = deps.persistAuth ?? persistOpenAiAuth;
+
+  const nextTokens = await refreshTokens(fetchImpl, {
+    issuer,
+    clientId,
+    refreshToken: tokens.refresh_token,
+    debug: options.debug,
+  });
+
+  const refreshedApiKey = await maybeObtainOpenAiApiKey(fetchImpl, {
+    issuer,
+    clientId,
+    idToken: nextTokens.idToken,
+    debug: options.debug,
+  });
+  const openaiApiKey = refreshedApiKey ?? existingApiKey;
+
+  const persisted = await persistAuth(
+    {
+      issuer,
+      clientId,
+      idToken: nextTokens.idToken,
+      accessToken: nextTokens.accessToken,
+      refreshToken: nextTokens.refreshToken,
+      openaiApiKey,
+    },
+    options.codexHome,
+    options.switchHome,
+  );
+
+  return {
+    issuer,
+    clientId,
+    idToken: nextTokens.idToken,
+    accessToken: nextTokens.accessToken,
+    refreshToken: nextTokens.refreshToken,
+    openaiApiKey,
+    lastRefresh: persisted.last_refresh ?? null,
+  };
 }

@@ -1,6 +1,13 @@
+import crypto from "node:crypto";
 import http from "node:http";
 
 import { describe, expect, it, vi } from "vitest";
+
+import {
+  readAuthJson,
+  readSwitchAuthJson,
+  writeSwitchChatgptAuthJson,
+} from "../src/auth-json.js";
 
 import {
   buildAuthorizeUrl,
@@ -9,6 +16,8 @@ import {
   obtainOpenAiApiKey,
   parseBrowserCallback,
   pollDeviceCodeAuthorization,
+  refreshStoredOpenAiAuth,
+  refreshTokens,
   requestDeviceCode,
   runOpenAiBrowserLogin,
   startOAuthCallbackServer,
@@ -157,7 +166,7 @@ describe("openai-oauth", () => {
       redirectUri: "http://localhost:1455/auth/callback",
       codeVerifier: "verifier",
     }));
-    const writeAuthJson = vi.fn(async () => ({
+    const persistAuth = vi.fn(async () => ({
       auth_mode: "chatgpt" as const,
       openai_api_key: "sk-openai",
       tokens: null,
@@ -167,7 +176,7 @@ describe("openai-oauth", () => {
 
     const result = await runOpenAiBrowserLogin(
       { debug: true, codexHome: "/tmp/codex-home" },
-      { fetchImpl: fetchMock, startCallbackServer, writeAuthJson },
+      { fetchImpl: fetchMock, startCallbackServer, persistAuth },
     );
 
     expect(result.openaiApiKey).toBeNull();
@@ -182,7 +191,7 @@ describe("openai-oauth", () => {
     });
     expect(apiKeyExchangeCalls).toHaveLength(0);
     expect(startCallbackServer).toHaveBeenCalledTimes(1);
-    expect(writeAuthJson).toHaveBeenCalledTimes(1);
+    expect(persistAuth).toHaveBeenCalledTimes(1);
   });
 
   it("id_token 带 organization_id 时才尝试 api key exchange", async () => {
@@ -219,7 +228,7 @@ describe("openai-oauth", () => {
           redirectUri: "http://localhost:1455/auth/callback",
           codeVerifier: "verifier",
         })),
-        writeAuthJson: vi.fn(async () => ({
+        persistAuth: vi.fn(async () => ({
           auth_mode: "chatgpt" as const,
           openai_api_key: "sk-openai",
           tokens: null,
@@ -235,6 +244,147 @@ describe("openai-oauth", () => {
       return body instanceof URLSearchParams && body.get("grant_type") === "urn:ietf:params:oauth:grant-type:token-exchange";
     });
     expect(apiKeyExchangeCalls).toHaveLength(1);
+  });
+
+  it("refresh token 请求体符合预期并保留旧 refresh token", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      const body = init?.body;
+      if (!(body instanceof URLSearchParams)) {
+        throw new Error("unexpected body");
+      }
+      expect(body.get("grant_type")).toBe("refresh_token");
+      expect(body.get("refresh_token")).toBe("refresh-old");
+      return responseJson({
+        id_token: "id-new",
+        access_token: "access-new",
+      });
+    });
+
+    const result = await refreshTokens(fetchMock, {
+      refreshToken: "refresh-old",
+      debug: true,
+    });
+
+    expect(result).toEqual({
+      idToken: "id-new",
+      accessToken: "access-new",
+      refreshToken: "refresh-old",
+    });
+  });
+
+  it("刷新已保存 OpenAI 登录态并同步 runtime auth", async () => {
+    const switchHome = `${process.env.TMPDIR || "/tmp"}/codex-switch-oauth-switch-${crypto.randomUUID()}`;
+    const codexHome = `${process.env.TMPDIR || "/tmp"}/codex-switch-oauth-runtime-${crypto.randomUUID()}`;
+    const idToken = createJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_old",
+      },
+    });
+    const refreshedIdToken = createJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_new",
+        organization_id: "org_123",
+      },
+    });
+
+    await writeSwitchChatgptAuthJson(
+      {
+        issuer: "https://issuer.example.com",
+        clientId: "client-1",
+        idToken,
+        accessToken: "access-old",
+        refreshToken: "refresh-old",
+      },
+      switchHome,
+    );
+
+    const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      const body = init?.body;
+      if (!(body instanceof URLSearchParams)) {
+        throw new Error("unexpected body");
+      }
+      if (body.get("grant_type") === "refresh_token") {
+        return responseJson({
+          id_token: refreshedIdToken,
+          access_token: "access-new",
+          refresh_token: "refresh-new",
+        });
+      }
+      if (body.get("grant_type") === "urn:ietf:params:oauth:grant-type:token-exchange") {
+        return responseJson({ access_token: "sk-new" });
+      }
+      throw new Error("unexpected grant_type");
+    });
+
+    const result = await refreshStoredOpenAiAuth(
+      { codexHome, switchHome, debug: true },
+      { fetchImpl: fetchMock },
+    );
+
+    expect(result.refreshToken).toBe("refresh-new");
+    expect(result.openaiApiKey).toBe("sk-new");
+    const switchAuth = await readSwitchAuthJson(switchHome);
+    const runtimeAuth = await readAuthJson(codexHome);
+    expect(switchAuth && "openai_api_key" in switchAuth ? switchAuth.openai_api_key : null).toBe("sk-new");
+    expect(runtimeAuth && "openai_api_key" in runtimeAuth ? runtimeAuth.openai_api_key : null).toBe("sk-new");
+  });
+
+  it("刷新时 API key exchange 失败会保留旧 openai_api_key", async () => {
+    const switchHome = `${process.env.TMPDIR || "/tmp"}/codex-switch-oauth-switch-${crypto.randomUUID()}`;
+    const codexHome = `${process.env.TMPDIR || "/tmp"}/codex-switch-oauth-runtime-${crypto.randomUUID()}`;
+    const idToken = createJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_old",
+        organization_id: "org_old",
+      },
+    });
+    const refreshedIdToken = createJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_new",
+        organization_id: "org_123",
+      },
+    });
+
+    await writeSwitchChatgptAuthJson(
+      {
+        issuer: "https://issuer.example.com",
+        clientId: "client-1",
+        idToken,
+        accessToken: "access-old",
+        refreshToken: "refresh-old",
+        openaiApiKey: "sk-old",
+      },
+      switchHome,
+    );
+
+    const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      const body = init?.body;
+      if (!(body instanceof URLSearchParams)) {
+        throw new Error("unexpected body");
+      }
+      if (body.get("grant_type") === "refresh_token") {
+        return responseJson({
+          id_token: refreshedIdToken,
+          access_token: "access-new",
+          refresh_token: "refresh-new",
+        });
+      }
+      if (body.get("grant_type") === "urn:ietf:params:oauth:grant-type:token-exchange") {
+        return new Response("", { status: 500 });
+      }
+      throw new Error("unexpected grant_type");
+    });
+
+    const result = await refreshStoredOpenAiAuth(
+      { codexHome, switchHome, debug: true },
+      { fetchImpl: fetchMock },
+    );
+
+    expect(result.openaiApiKey).toBe("sk-old");
+    const switchAuth = await readSwitchAuthJson(switchHome);
+    const runtimeAuth = await readAuthJson(codexHome);
+    expect(switchAuth && "openai_api_key" in switchAuth ? switchAuth.openai_api_key : null).toBe("sk-old");
+    expect(runtimeAuth && "openai_api_key" in runtimeAuth ? runtimeAuth.openai_api_key : null).toBe("sk-old");
   });
 
   it("debug 日志会脱敏敏感字段", async () => {

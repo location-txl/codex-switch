@@ -1,4 +1,5 @@
 export const DEFAULT_CODEX_HOME_DIRNAME = ".codex";
+export const SWITCH_HOME_DIRNAME = ".codex-switch";
 export const APP_CONFIG_BASENAME = ".codex-switch.json";
 export const PROVIDER_STORE_BASENAME = "codex-switch.providers.json";
 export const CONFIG_BASENAME = "config.toml";

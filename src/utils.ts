@@ -8,6 +8,7 @@ import {
   CONFIG_BASENAME,
   DEFAULT_CODEX_HOME_DIRNAME,
   PROVIDER_STORE_BASENAME,
+  SWITCH_HOME_DIRNAME,
 } from "./constants.js";
 import { readConfiguredCodexHomeSync } from "./app-config.js";
 
@@ -15,6 +16,10 @@ export function getCodexHome(): string {
   return process.env.CODEX_HOME ||
     readConfiguredCodexHomeSync() ||
     path.join(os.homedir(), DEFAULT_CODEX_HOME_DIRNAME);
+}
+
+export function getSwitchHome(): string {
+  return process.env.CODEX_SWITCH_HOME || path.join(os.homedir(), SWITCH_HOME_DIRNAME);
 }
 
 export function getCodexConfigPath(codexHome = getCodexHome()): string {
@@ -25,12 +30,19 @@ export function getCodexAuthPath(codexHome = getCodexHome()): string {
   return path.join(codexHome, AUTH_BASENAME);
 }
 
-export function getProviderStorePath(codexHome = getCodexHome()): string {
-  return path.join(codexHome, PROVIDER_STORE_BASENAME);
+export function getSwitchAuthPath(switchHome = getSwitchHome()): string {
+  return path.join(switchHome, AUTH_BASENAME);
 }
 
-export async function ensureDir(dirPath: string): Promise<void> {
-  await fs.mkdir(dirPath, { recursive: true });
+export function getProviderStorePath(switchHome = getSwitchHome()): string {
+  return path.join(switchHome, PROVIDER_STORE_BASENAME);
+}
+
+export async function ensureDir(dirPath: string, mode = 0o700): Promise<void> {
+  await fs.mkdir(dirPath, { recursive: true, mode });
+  if (process.platform !== "win32") {
+    await fs.chmod(dirPath, mode);
+  }
 }
 
 export async function readFileIfExists(filePath: string): Promise<string | null> {
@@ -49,7 +61,7 @@ export async function atomicWriteFile(
   content: string,
   mode = 0o600,
 ): Promise<void> {
-  await ensureDir(path.dirname(filePath));
+  await ensureDir(path.dirname(filePath), 0o700);
   const tempName = `${path.basename(filePath)}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   const tempPath = path.join(path.dirname(filePath), tempName);
   await fs.writeFile(tempPath, content, { encoding: "utf8", mode });

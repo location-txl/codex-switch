@@ -33,8 +33,8 @@ function normalizeStoreData(data: unknown): ProviderStoreData {
   return { providers };
 }
 
-export async function loadProviderStore(codexHome?: string): Promise<ProviderStoreData> {
-  const filePath = getProviderStorePath(codexHome);
+export async function loadProviderStore(switchHome?: string): Promise<ProviderStoreData> {
+  const filePath = getProviderStorePath(switchHome);
   const raw = await readFileIfExists(filePath);
   if (!raw) {
     return { providers: [] };
@@ -45,31 +45,31 @@ export async function loadProviderStore(codexHome?: string): Promise<ProviderSto
 
 export async function saveProviderStore(
   store: ProviderStoreData,
-  codexHome?: string,
+  switchHome?: string,
 ): Promise<void> {
-  const filePath = getProviderStorePath(codexHome);
+  const filePath = getProviderStorePath(switchHome);
   const content = `${JSON.stringify(store, null, 2)}\n`;
   await atomicWriteFile(filePath, content, 0o600);
 }
 
-export async function listProviders(codexHome?: string): Promise<ProviderRecord[]> {
-  const store = await loadProviderStore(codexHome);
+export async function listProviders(switchHome?: string): Promise<ProviderRecord[]> {
+  const store = await loadProviderStore(switchHome);
   return [...store.providers].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function getProvider(
   name: string,
-  codexHome?: string,
+  switchHome?: string,
 ): Promise<ProviderRecord | null> {
-  const store = await loadProviderStore(codexHome);
+  const store = await loadProviderStore(switchHome);
   return store.providers.find((item) => item.name === name) || null;
 }
 
 export async function upsertProvider(
   input: { name: string; baseUrl: string; sk: string },
-  codexHome?: string,
+  switchHome?: string,
 ): Promise<ProviderRecord> {
-  const store = await loadProviderStore(codexHome);
+  const store = await loadProviderStore(switchHome);
   const now = new Date().toISOString();
   const existing = store.providers.find((item) => item.name === input.name);
 
@@ -92,16 +92,16 @@ export async function upsertProvider(
     ? store.providers.map((item) => (item.name === next.name ? next : item))
     : [...store.providers, next];
 
-  await saveProviderStore({ providers }, codexHome);
+  await saveProviderStore({ providers }, switchHome);
   return next;
 }
 
-export async function removeProvider(name: string, codexHome?: string): Promise<boolean> {
-  const store = await loadProviderStore(codexHome);
+export async function removeProvider(name: string, switchHome?: string): Promise<boolean> {
+  const store = await loadProviderStore(switchHome);
   const providers = store.providers.filter((item) => item.name !== name);
   if (providers.length === store.providers.length) {
     return false;
   }
-  await saveProviderStore({ providers }, codexHome);
+  await saveProviderStore({ providers }, switchHome);
   return true;
 }

@@ -5,7 +5,24 @@
 - 切回 OpenAI 官方服务
 - 配置并切换多个第三方 provider
 - 直接执行 OpenAI ChatGPT OAuth（浏览器 / device code）
-- 只增量修改 `~/.codex/config.toml` 与 `~/.codex/auth.json`
+- 将 codex-switch 自己管理的 OpenAI 登录态与第三方 provider 存到 `~/.codex-switch`
+- 按需增量修改 Codex 运行时的 `~/.codex/config.toml` 与 `~/.codex/auth.json`
+
+## 存储位置
+
+`~/.codex-switch` 是 codex-switch 的私有状态目录：
+
+- `auth.json`：保存 OpenAI/OpenID 登录后的 token、refresh token、issuer、client id 与换取到的 OpenAI API key
+- `codex-switch.providers.json`：保存第三方 provider 的名称、base URL 与密钥
+
+Codex 自己运行时仍然读取 `~/.codex`（或 `--codex-home` 指定目录）：
+
+- `config.toml`：记录当前启用的 provider 与 provider 接线方式
+- `auth.json`：保存同步给 Codex 使用的 OpenAI 登录态副本
+
+注意：新版本不会自动迁移旧的 `~/.codex/auth.json` 或旧 provider store。首次使用新版本时，请重新执行 `codex-switch login openai` 和需要的 `codex-switch add ...`。
+
+切换到第三方 provider 前，CLI 会强制刷新 `~/.codex-switch/auth.json` 中保存的 OpenAI 登录态，并同步最新 OpenAI 凭据到 Codex 运行时 `auth.json`。如果刷新失败，第三方切换会被阻塞。
 
 ## 开发
 
@@ -39,6 +56,8 @@ node --inspect-brk dist/src/cli.js current --codex-home /tmp/codex-switch-debug
 然后用 Chrome DevTools 或 VS Code attach 到该进程。
 
 这个 CLI 会读写 Codex 配置。调试时建议总是带上 `--codex-home /tmp/...`，避免误改真实的 `~/.codex`。
+
+如需隔离 codex-switch 私有状态，测试时也可以设置 `CODEX_SWITCH_HOME=/tmp/...`。
 
 ## 本地执行
 

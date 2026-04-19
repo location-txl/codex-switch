@@ -2,11 +2,11 @@
 
 import { getCurrentProviderInfo, removeManagedProviderConfig, setCurrentProviderToOpenAI, upsertManagedProviderConfig } from "./codex-config.js";
 import { DEFAULT_OPENAI_CLIENT_ID, DEFAULT_OPENAI_ISSUER, RESERVED_PROVIDER_IDS } from "./constants.js";
-import { getLegacyApiKey, readAuthJson } from "./auth-json.js";
-import { runOpenAiBrowserLogin, runOpenAiDeviceLogin } from "./openai-oauth.js";
+import { getLegacyApiKey, readAuthJson, readSwitchAuthJson } from "./auth-json.js";
+import { refreshStoredOpenAiAuth, runOpenAiBrowserLogin, runOpenAiDeviceLogin } from "./openai-oauth.js";
 import { getProvider, listProviders, removeProvider, upsertProvider } from "./provider-store.js";
 import { runTokenCommand } from "./token-command.js";
-import { isProviderIdValid, maskSecret, getCodexHome } from "./utils.js";
+import { getCodexHome, getSwitchHome, isProviderIdValid, maskSecret } from "./utils.js";
 import { clearConfiguredCodexHome, readConfiguredCodexHomeSync, writeConfiguredCodexHome } from "./app-config.js";
 
 export interface ParsedArgs {
@@ -97,28 +97,44 @@ function assertProviderName(name: string): void {
 
 async function handleCurrent(codexHome?: string): Promise<void> {
   const current = await getCurrentProviderInfo(codexHome);
-  const auth = await readAuthJson(codexHome);
-  const legacyApiKey = getLegacyApiKey(auth);
-
-  if (!current.providerId) {
-    process.stdout.write("当前未配置 model_provider\n");
-    return;
-  }
+  const runtimeAuth = await readAuthJson(codexHome);
+  const switchAuth = await readSwitchAuthJson();
+  const legacyApiKey = getLegacyApiKey(runtimeAuth);
+  const switchTokens =
+    switchAuth &&
+      "tokens" in switchAuth &&
+      switchAuth.tokens?.id_token &&
+      switchAuth.tokens.access_token &&
+      switchAuth.tokens.refresh_token
+      ? switchAuth.tokens
+      : null;
+  const switchApiKey =
+    switchAuth && "openai_api_key" in switchAuth && typeof switchAuth.openai_api_key === "string"
+      ? switchAuth.openai_api_key
+      : null;
+  const switchLastRefresh =
+    switchAuth && "last_refresh" in switchAuth && typeof switchAuth.last_refresh === "string"
+      ? switchAuth.last_refresh
+      : "-";
 
   process.stdout.write(
     [
-      `provider: ${current.providerId}`,
+      `provider: ${current.providerId ?? "-"}`,
       `base_url: ${current.baseUrl ?? "-"}`,
       `auth_mode: ${current.authMode ?? "-"}`,
       `managed: ${current.managedByCodexSwitch ? "yes" : "no"}`,
       `codex_home: ${codexHome || getCodexHome()}`,
+      `switch_store: ${getSwitchHome()}`,
+      `openai_login: ${switchTokens ? "yes" : "no"}`,
+      `openai_last_refresh: ${switchLastRefresh}`,
+      `openai_api_key: ${switchApiKey ? maskSecret(switchApiKey) : "-"}`,
       `legacy_openai_api_key: ${legacyApiKey ? maskSecret(legacyApiKey) : "-"}`,
     ].join("\n") + "\n",
   );
 }
 
-async function handleList(codexHome?: string): Promise<void> {
-  const providers = await listProviders(codexHome);
+async function handleList(): Promise<void> {
+  const providers = await listProviders();
   if (providers.length === 0) {
     process.stdout.write("没有已保存的第三方 provider\n");
     return;
@@ -145,7 +161,7 @@ async function handleAdd(parsed: ParsedArgs, codexHome?: string): Promise<void> 
     throw new Error("缺少 --sk");
   }
 
-  const provider = await upsertProvider({ name, baseUrl, sk }, codexHome);
+  const provider = await upsertProvider({ name, baseUrl, sk });
   await upsertManagedProviderConfig({ name, baseUrl, setActive: false }, codexHome);
   process.stdout.write(`已保存 provider ${provider.name}\n`);
 }
@@ -157,15 +173,21 @@ async function handleUse(parsed: ParsedArgs, codexHome?: string): Promise<void> 
   }
 
   if (name === "openai") {
+    const switchAuth = await readSwitchAuthJson();
+    if (switchAuth) {
+      await refreshStoredOpenAiAuth({ codexHome });
+    }
     await setCurrentProviderToOpenAI(codexHome);
     process.stdout.write("已切换到 OpenAI 官方 provider\n");
     return;
   }
 
-  const provider = await getProvider(name, codexHome);
+  const provider = await getProvider(name);
   if (!provider) {
     throw new Error(`provider ${name} 不存在`);
   }
+
+  await refreshStoredOpenAiAuth({ codexHome });
 
   await upsertManagedProviderConfig({
     name: provider.name,
@@ -189,7 +211,7 @@ async function handleRemove(parsed: ParsedArgs, codexHome?: string): Promise<voi
     throw new Error("当前正在使用该 provider，请先切换到其他 provider 再删除");
   }
 
-  const removed = await removeProvider(name, codexHome);
+  const removed = await removeProvider(name);
   await removeManagedProviderConfig(name, codexHome);
   if (!removed) {
     throw new Error(`provider ${name} 不存在`);
@@ -281,7 +303,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!name) {
       throw new Error("缺少 provider 名称");
     }
-    await runTokenCommand(name, codexHome);
+    await runTokenCommand(name);
     return;
   }
 
@@ -290,7 +312,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await handleCurrent(codexHome);
       return;
     case "list":
-      await handleList(codexHome);
+      await handleList();
       return;
     case "add":
       await handleAdd(parsed, codexHome);
