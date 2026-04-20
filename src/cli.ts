@@ -12,6 +12,7 @@ import { getProvider, listProviders, removeProvider, upsertProvider } from "./pr
 import { runTokenCommand } from "./token-command.js";
 import { getCodexHome, getSwitchHome, isProviderIdValid, maskSecret } from "./utils.js";
 import { clearConfiguredCodexHome, readConfiguredCodexHomeSync, writeConfiguredCodexHome } from "./app-config.js";
+import { promptProviderParams } from './interactive-add.js';
 
 interface GlobalOptions {
   "codex-home"?: string;
@@ -35,6 +36,14 @@ function assertProviderName(name: string): void {
   if (RESERVED_PROVIDER_IDS.has(name)) {
     throw new Error(`provider 名称 ${name} 是 Codex 保留值`);
   }
+}
+
+function getMissingAddArgs(input: { name?: string; baseUrl?: string; sk?: string }): string[] {
+  const missing: string[] = [];
+  if (!input.name) missing.push("name");
+  if (!input.baseUrl) missing.push("--base-url");
+  if (!input.sk) missing.push("--sk");
+  return missing;
 }
 
 async function handleCurrent(codexHome?: string): Promise<void> {
@@ -87,10 +96,39 @@ async function handleList(): Promise<void> {
   }
 }
 
-async function handleAdd(name: string, baseUrl: string, sk: string, codexHome?: string): Promise<void> {
-  assertProviderName(name);
-  const provider = await upsertProvider({ name, baseUrl, sk });
-  await upsertManagedProviderConfig({ name, baseUrl, setActive: false }, codexHome);
+async function handleAdd(
+  name: string | undefined,
+  baseUrl: string | undefined,
+  sk: string | undefined,
+  codexHome?: string
+): Promise<void> {
+  let finalName = name;
+  let finalBaseUrl = baseUrl;
+  let finalSk = sk;
+
+  const hasMissing = !finalName || !finalBaseUrl || !finalSk;
+
+  if (hasMissing) {
+    if (process.stdin.isTTY !== true) {
+      throw new Error(`缺少必填参数：${getMissingAddArgs({ name, baseUrl, sk }).join("、")}`);
+    }
+
+    const params = await promptProviderParams({ name, baseUrl, sk });
+    if (!params) return;  // 用户取消
+    finalName = params.name;
+    finalBaseUrl = params.baseUrl;
+    finalSk = params.sk;
+  }
+
+  // 此时三个值一定存在（runtime check for TypeScript narrowing）
+  if (!finalName || !finalBaseUrl || !finalSk) {
+    throw new Error('参数缺失');
+  }
+
+  // 原有保存逻辑
+  assertProviderName(finalName);
+  const provider = await upsertProvider({ name: finalName, baseUrl: finalBaseUrl, sk: finalSk });
+  await upsertManagedProviderConfig({ name: finalName, baseUrl: finalBaseUrl, setActive: false }, codexHome);
   process.stdout.write(`已保存 provider ${provider.name}\n`);
 }
 
@@ -245,27 +283,24 @@ function createCli(argv: string[]): Argv<GlobalOptions> {
       },
     )
     .command(
-      "add <name>",
+      "add [name]",
       "保存第三方 provider",
       (builder) =>
         builder
           .positional("name", {
             type: "string",
-            demandOption: true,
             describe: "provider 名称",
           })
           .option("base-url", {
             type: "string",
-            demandOption: true,
             describe: "OpenAI 兼容 API base URL",
           })
           .option("sk", {
             type: "string",
-            demandOption: true,
             describe: "provider API key",
           }),
       async (argv) => {
-        const args = argv as CliArgs<{ name: string; "base-url": string; sk: string }>;
+        const args = argv as CliArgs<{ name?: string; "base-url"?: string; sk?: string }>;
         await handleAdd(args.name, args["base-url"], args.sk, applyCodexHome(args));
       },
     )

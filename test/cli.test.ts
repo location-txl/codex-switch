@@ -42,6 +42,22 @@ describe("cli", () => {
     }
   });
 
+  it("非交互环境 add 缺少必填参数时直接失败", async () => {
+    const { codexHome, restoreEnv } = prepareHomes();
+    const restoreStdinTty = setStdinTty(false);
+    try {
+      await expect(main(["add", "missing-base-url", "--sk", "sk-demo", "--codex-home", codexHome]))
+        .rejects
+        .toThrow("缺少必填参数：--base-url");
+
+      const provider = await getProvider("missing-base-url");
+      expect(provider).toBeNull();
+    } finally {
+      restoreStdinTty();
+      restoreEnv();
+    }
+  });
+
   it("无 OpenAI 登录态时也能切换第三方 provider", async () => {
     const { codexHome, switchHome, restoreEnv } = prepareHomes();
     try {
@@ -185,6 +201,22 @@ function prepareHomes(): { codexHome: string; switchHome: string; restoreEnv: ()
         process.env.CODEX_SWITCH_HOME = originalSwitchHome;
       }
     },
+  };
+}
+
+function setStdinTty(value: boolean): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+  Object.defineProperty(process.stdin, "isTTY", {
+    configurable: true,
+    value,
+  });
+
+  return () => {
+    if (descriptor) {
+      Object.defineProperty(process.stdin, "isTTY", descriptor);
+    } else {
+      delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
   };
 }
 

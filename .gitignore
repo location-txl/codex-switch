@@ -2,3 +2,4 @@ dist/
 node_modules/
 .codex_test/
 *.local.json
+docs/superpowers/
