@@ -187,8 +187,6 @@ async function handleUse(parsed: ParsedArgs, codexHome?: string): Promise<void> 
     throw new Error(`provider ${name} 不存在`);
   }
 
-  await refreshStoredOpenAiAuth({ codexHome });
-
   await upsertManagedProviderConfig({
     name: provider.name,
     baseUrl: provider.baseUrl,

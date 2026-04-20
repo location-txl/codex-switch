@@ -21,7 +21,7 @@ describe("cli", () => {
     expect(parsed.flags.get("--debug")).toBe(true);
   });
 
-  it("切换第三方 provider 前刷新 OpenAI 登录态并同步 runtime auth", async () => {
+  it("无 OpenAI 登录态时也能切换第三方 provider", async () => {
     const { codexHome, switchHome, restoreEnv } = prepareHomes();
     try {
       await writeCodexConfigText('model_provider = "openai"\n', codexHome);
@@ -30,60 +30,20 @@ describe("cli", () => {
         baseUrl: "https://demo.example.com/v1",
         sk: "sk-demo",
       }, switchHome);
-      await writeSwitchChatgptAuthJson({
-        issuer: "https://issuer.example.com",
-        clientId: "client-1",
-        idToken: createJwt({
-          "https://api.openai.com/auth": {
-            chatgpt_account_id: "acct_old",
-          },
-        }),
-        accessToken: "access-old",
-        refreshToken: "refresh-old",
-      }, switchHome);
 
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
-        const body = init?.body;
-        if (!(body instanceof URLSearchParams)) {
-          throw new Error("unexpected body");
-        }
-        if (body.get("grant_type") === "refresh_token") {
-          return responseJson({
-            id_token: createJwt({
-              "https://api.openai.com/auth": {
-                chatgpt_account_id: "acct_new",
-                organization_id: "org_123",
-              },
-            }),
-            access_token: "access-new",
-            refresh_token: "refresh-new",
-          });
-        }
-        if (body.get("grant_type") === "urn:ietf:params:oauth:grant-type:token-exchange") {
-          return responseJson({ access_token: "sk-new" });
-        }
-        throw new Error("unexpected grant_type");
-      };
-
-      try {
-        await main(["use", "demo", "--codex-home", codexHome]);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-
+      await main(["use", "demo", "--codex-home", codexHome]);
       const config = await readCodexConfigText(codexHome);
-      const runtimeAuth = JSON.parse(await fs.readFile(getCodexAuthPath(codexHome), "utf8")) as {
-        openai_api_key: string;
-      };
       expect(config).toContain('model_provider = "demo"');
-      expect(runtimeAuth.openai_api_key).toBe("sk-new");
+      expect(config).toContain('[model_providers.demo.auth]');
+      expect(config).toContain('command = "codex-switch"');
+      expect(config).toContain('args = ["token", "demo"]');
+      await expect(fs.access(getCodexAuthPath(codexHome))).rejects.toThrow();
     } finally {
       restoreEnv();
     }
   });
 
-  it("OpenAI 登录态刷新失败时阻塞第三方切换", async () => {
+  it("OpenAI 登录态刷新失败不阻塞第三方切换", async () => {
     const { codexHome, switchHome, restoreEnv } = prepareHomes();
     try {
       await writeCodexConfigText('model_provider = "openai"\n', codexHome);
@@ -101,16 +61,13 @@ describe("cli", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = async () => new Response("", { status: 500 });
       try {
-        await expect(main(["use", "demo", "--codex-home", codexHome])).rejects.toThrow(
-          "refresh token 失败：HTTP 500",
-        );
+        await main(["use", "demo", "--codex-home", codexHome]);
       } finally {
         globalThis.fetch = originalFetch;
       }
 
       const config = await readCodexConfigText(codexHome);
-      expect(config).toContain('model_provider = "openai"');
-      expect(config).not.toContain('model_provider = "demo"');
+      expect(config).toContain('model_provider = "demo"');
     } finally {
       restoreEnv();
     }
