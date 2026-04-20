@@ -1,16 +1,16 @@
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 import { APP_CONFIG_BASENAME } from "./constants.js";
+import { ensureDir, getSwitchHome } from "./utils.js";
 
 interface AppConfigShape {
   codexHome?: string;
 }
 
 export function getAppConfigPath(): string {
-  return path.join(os.homedir(), APP_CONFIG_BASENAME);
+  return path.join(getSwitchHome(), APP_CONFIG_BASENAME);
 }
 
 export function readAppConfigSync(): AppConfigShape {
@@ -34,9 +34,11 @@ export function readConfiguredCodexHomeSync(): string | null {
 }
 
 export async function writeConfiguredCodexHome(codexHome: string): Promise<void> {
+  const absolutePath = path.resolve(codexHome);
   const filePath = getAppConfigPath();
+  await ensureDir(path.dirname(filePath), 0o700);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const content = `${JSON.stringify({ codexHome }, null, 2)}\n`;
+  const content = `${JSON.stringify({ codexHome: absolutePath }, null, 2)}\n`;
   await fsPromises.writeFile(tempPath, content, { mode: 0o600, encoding: "utf8" });
   if (process.platform !== "win32") {
     await fsPromises.chmod(tempPath, 0o600);
