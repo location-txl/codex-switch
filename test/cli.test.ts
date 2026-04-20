@@ -2,23 +2,44 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-import { main, parseArgs } from "../src/cli.js";
+import { main } from "../src/cli.js";
 import { writeSwitchChatgptAuthJson } from "../src/auth-json.js";
 import { readCodexConfigText, writeCodexConfigText } from "../src/codex-config.js";
-import { upsertProvider } from "../src/provider-store.js";
+import { getProvider, upsertProvider } from "../src/provider-store.js";
 import { getCodexAuthPath } from "../src/utils.js";
 
 describe("cli", () => {
-  it("支持全局 --debug 放在命令前", () => {
-    const parsed = parseArgs(["--debug", "login", "openai"]);
-    expect(parsed.positionals).toEqual(["login", "openai"]);
-    expect(parsed.flags.get("--debug")).toBe(true);
+  it("无参数时显示帮助而不是报错", async () => {
+    const output = await captureStdout(() => main([]));
+
+    expect(output).toContain("codex-switch <command> [options]");
+    expect(output).toContain("codex-switch current");
   });
 
-  it("支持 --debug 放在命令后", () => {
-    const parsed = parseArgs(["login", "openai", "--debug"]);
-    expect(parsed.positionals).toEqual(["login", "openai"]);
-    expect(parsed.flags.get("--debug")).toBe(true);
+  it("yargs 支持 --base-url=... 内联参数值", async () => {
+    const { codexHome, restoreEnv } = prepareHomes();
+    try {
+      await main(["add", "inline", "--base-url=https://example.com/v1", "--sk", "sk-inline", "--codex-home", codexHome]);
+
+      const provider = await getProvider("inline");
+      expect(provider?.baseUrl).toBe("https://example.com/v1");
+      expect(provider?.sk).toBe("sk-inline");
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("yargs 支持全局参数放在命令前且 --base-url 后接参数值", async () => {
+    const { codexHome, restoreEnv } = prepareHomes();
+    try {
+      await main(["--codex-home", codexHome, "add", "spaced", "--base-url", "https://example.com/v1", "--sk", "sk-spaced"]);
+
+      const provider = await getProvider("spaced");
+      expect(provider?.baseUrl).toBe("https://example.com/v1");
+      expect(provider?.sk).toBe("sk-spaced");
+    } finally {
+      restoreEnv();
+    }
   });
 
   it("无 OpenAI 登录态时也能切换第三方 provider", async () => {
@@ -165,6 +186,29 @@ function prepareHomes(): { codexHome: string; switchHome: string; restoreEnv: ()
       }
     },
   };
+}
+
+async function captureStdout(fn: () => Promise<void>): Promise<string> {
+  const chunks: string[] = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array, encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    if (typeof encodingOrCallback === "function") {
+      encodingOrCallback();
+    }
+    if (callback) {
+      callback();
+    }
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    await fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  return chunks.join("");
 }
 
 function responseJson(body: unknown): Response {

@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+import yargs from "yargs/yargs";
+import type { ArgumentsCamelCase, Argv } from "yargs";
+import { hideBin } from "yargs/helpers";
+
 import { getCurrentProviderInfo, removeManagedProviderConfig, setCurrentProviderToOpenAI, upsertManagedProviderConfig } from "./codex-config.js";
 import { DEFAULT_OPENAI_CLIENT_ID, DEFAULT_OPENAI_ISSUER, RESERVED_PROVIDER_IDS } from "./constants.js";
 import { getLegacyApiKey, readAuthJson, readSwitchAuthJson, writeRuntimeLegacyApiKeyAuthJson } from "./auth-json.js";
@@ -9,81 +13,19 @@ import { runTokenCommand } from "./token-command.js";
 import { getCodexHome, getSwitchHome, isProviderIdValid, maskSecret } from "./utils.js";
 import { clearConfiguredCodexHome, readConfiguredCodexHomeSync, writeConfiguredCodexHome } from "./app-config.js";
 
-export interface ParsedArgs {
-  positionals: string[];
-  flags: Map<string, string | boolean>;
+interface GlobalOptions {
+  "codex-home"?: string;
+  debug?: boolean;
 }
 
-const BOOLEAN_FLAGS = new Set(["--debug", "--browser", "--device"]);
+type CliArgs<T> = ArgumentsCamelCase<T & GlobalOptions>;
 
-export function parseArgs(argv: string[]): ParsedArgs {
-  const positionals: string[] = [];
-  const flags = new Map<string, string | boolean>();
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const item = argv[index]!;
-    if (!item.startsWith("--")) {
-      positionals.push(item);
-      continue;
-    }
-
-    const [flag, inlineValue] = item.split("=", 2);
-    if (inlineValue !== undefined) {
-      flags.set(flag, inlineValue);
-      continue;
-    }
-
-    if (BOOLEAN_FLAGS.has(flag)) {
-      flags.set(flag, true);
-      continue;
-    }
-
-    const next = argv[index + 1];
-    if (next && !next.startsWith("--")) {
-      flags.set(flag, next);
-      index += 1;
-      continue;
-    }
-
-    flags.set(flag, true);
+function applyCodexHome(argv: GlobalOptions): string | undefined {
+  const codexHome = argv["codex-home"];
+  if (codexHome) {
+    process.env.CODEX_HOME = codexHome;
   }
-
-  return { positionals, flags };
-}
-
-function getStringFlag(flags: Map<string, string | boolean>, name: string): string | null {
-  const value = flags.get(name);
-  return typeof value === "string" ? value : null;
-}
-
-function hasFlag(flags: Map<string, string | boolean>, name: string): boolean {
-  return flags.get(name) === true || typeof flags.get(name) === "string";
-}
-
-function printHelp(): void {
-  process.stdout.write(
-    [
-      "codex-switch",
-      "",
-      "命令：",
-      "  codex-switch current",
-      "  codex-switch list",
-      "  codex-switch add <name> --base-url <url> --sk <key>",
-      "  codex-switch use <name>",
-      "  codex-switch use openai",
-      "  codex-switch remove <name>",
-      "  codex-switch login openai [--browser|--device]",
-      "  codex-switch home set <path>",
-      "  codex-switch home show",
-      "  codex-switch home clear",
-      "  codex-switch token <name>",
-      "",
-      "全局选项：",
-      "  --codex-home <path>    仅当前命令覆盖 Codex 配置目录",
-      "  --debug                输出脱敏后的详细调试日志",
-      "",
-    ].join("\n"),
-  );
+  return codexHome;
 }
 
 function assertProviderName(name: string): void {
@@ -145,33 +87,14 @@ async function handleList(): Promise<void> {
   }
 }
 
-async function handleAdd(parsed: ParsedArgs, codexHome?: string): Promise<void> {
-  const name = parsed.positionals[1];
-  if (!name) {
-    throw new Error("缺少 provider 名称");
-  }
-
+async function handleAdd(name: string, baseUrl: string, sk: string, codexHome?: string): Promise<void> {
   assertProviderName(name);
-  const baseUrl = getStringFlag(parsed.flags, "--base-url");
-  const sk = getStringFlag(parsed.flags, "--sk");
-  if (!baseUrl) {
-    throw new Error("缺少 --base-url");
-  }
-  if (!sk) {
-    throw new Error("缺少 --sk");
-  }
-
   const provider = await upsertProvider({ name, baseUrl, sk });
   await upsertManagedProviderConfig({ name, baseUrl, setActive: false }, codexHome);
   process.stdout.write(`已保存 provider ${provider.name}\n`);
 }
 
-async function handleUse(parsed: ParsedArgs, codexHome?: string): Promise<void> {
-  const name = parsed.positionals[1];
-  if (!name) {
-    throw new Error("缺少 provider 名称");
-  }
-
+async function handleUse(name: string, codexHome?: string): Promise<void> {
   if (name === "openai") {
     const switchAuth = await readSwitchAuthJson();
     if (switchAuth) {
@@ -196,11 +119,7 @@ async function handleUse(parsed: ParsedArgs, codexHome?: string): Promise<void> 
   process.stdout.write(`已切换到 provider ${provider.name}\n`);
 }
 
-async function handleRemove(parsed: ParsedArgs, codexHome?: string): Promise<void> {
-  const name = parsed.positionals[1];
-  if (!name) {
-    throw new Error("缺少 provider 名称");
-  }
+async function handleRemove(name: string, codexHome?: string): Promise<void> {
   if (name === "openai") {
     throw new Error("不能删除 openai provider");
   }
@@ -218,18 +137,25 @@ async function handleRemove(parsed: ParsedArgs, codexHome?: string): Promise<voi
   process.stdout.write(`已删除 provider ${name}\n`);
 }
 
-async function handleLogin(parsed: ParsedArgs, codexHome?: string): Promise<void> {
-  const target = parsed.positionals[1];
+async function handleLogin(input: {
+  target: string;
+  issuer?: string;
+  clientId?: string;
+  device?: boolean;
+  browser?: boolean;
+  debug?: boolean;
+  codexHome?: string;
+}): Promise<void> {
+  const { target, codexHome } = input;
   if (target !== "openai") {
     throw new Error("当前只支持 login openai");
   }
 
-  const issuer = getStringFlag(parsed.flags, "--experimental-issuer") || DEFAULT_OPENAI_ISSUER;
-  const clientId =
-    getStringFlag(parsed.flags, "--experimental-client-id") || DEFAULT_OPENAI_CLIENT_ID;
-  const device = hasFlag(parsed.flags, "--device");
-  const browser = hasFlag(parsed.flags, "--browser");
-  const debug = hasFlag(parsed.flags, "--debug");
+  const issuer = input.issuer || DEFAULT_OPENAI_ISSUER;
+  const clientId = input.clientId || DEFAULT_OPENAI_CLIENT_ID;
+  const device = input.device === true;
+  const browser = input.browser === true;
+  const debug = input.debug === true;
 
   if (device && browser) {
     throw new Error("--browser 与 --device 不能同时使用");
@@ -249,88 +175,232 @@ async function handleLogin(parsed: ParsedArgs, codexHome?: string): Promise<void
   );
 }
 
-async function handleHome(parsed: ParsedArgs): Promise<void> {
-  const subcommand = parsed.positionals[1];
-
-  switch (subcommand) {
-    case "set": {
-      const targetPath = parsed.positionals[2];
-      if (!targetPath) {
-        throw new Error("缺少目录路径");
-      }
-      await writeConfiguredCodexHome(targetPath);
-      process.stdout.write(`已设置默认 Codex 目录：${targetPath}\n`);
-      return;
-    }
-    case "show": {
-      const configured = readConfiguredCodexHomeSync();
-      const resolved = getCodexHome();
-      process.stdout.write(
-        [
-          `configured: ${configured ?? "-"}`,
-          `resolved: ${resolved}`,
-        ].join("\n") + "\n",
-      );
-      return;
-    }
-    case "clear": {
-      await clearConfiguredCodexHome();
-      process.stdout.write("已清除默认 Codex 目录配置\n");
-      return;
-    }
-    default:
-      throw new Error("home 只支持 set/show/clear");
-  }
+async function handleHomeSet(targetPath: string): Promise<void> {
+  await writeConfiguredCodexHome(targetPath);
+  process.stdout.write(`已设置默认 Codex 目录：${targetPath}\n`);
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const parsed = parseArgs(argv);
-  const command = parsed.positionals[0];
-  const codexHome = getStringFlag(parsed.flags, "--codex-home") || undefined;
+function handleHomeShow(): void {
+  const configured = readConfiguredCodexHomeSync();
+  const resolved = getCodexHome();
+  process.stdout.write(
+    [
+      `configured: ${configured ?? "-"}`,
+      `resolved: ${resolved}`,
+    ].join("\n") + "\n",
+  );
+}
 
-  if (codexHome) {
-    process.env.CODEX_HOME = codexHome;
-  }
+async function handleHomeClear(): Promise<void> {
+  await clearConfiguredCodexHome();
+  process.stdout.write("已清除默认 Codex 目录配置\n");
+}
 
-  if (!command || command === "--help" || command === "-h" || command === "help") {
-    printHelp();
-    return;
-  }
+function createCli(argv: string[]): Argv<GlobalOptions> {
+  const cli = yargs(argv)
+    .scriptName("codex-switch")
+    .usage("$0 <command> [options]")
+    .parserConfiguration({
+      "boolean-negation": false,
+      "camel-case-expansion": false,
+      "parse-numbers": false,
+      "parse-positional-numbers": false,
+      "populate--": false,
+    })
+    .option("codex-home", {
+      type: "string",
+      global: true,
+      describe: "仅当前命令覆盖 Codex 配置目录",
+    })
+    .option("debug", {
+      type: "boolean",
+      global: true,
+      describe: "输出脱敏后的详细调试日志",
+    })
+    .command(
+      "$0",
+      false,
+      (builder) => builder,
+      () => {
+        cli.showHelp((help) => {
+          process.stdout.write(`${help}\n`);
+        });
+      },
+    )
+    .command(
+      "current",
+      "显示当前 provider",
+      (builder) => builder,
+      async (argv) => {
+        const args = argv as CliArgs<GlobalOptions>;
+        await handleCurrent(applyCodexHome(args));
+      },
+    )
+    .command(
+      "list",
+      "列出已保存的第三方 provider",
+      (builder) => builder,
+      async () => {
+        await handleList();
+      },
+    )
+    .command(
+      "add <name>",
+      "保存第三方 provider",
+      (builder) =>
+        builder
+          .positional("name", {
+            type: "string",
+            demandOption: true,
+            describe: "provider 名称",
+          })
+          .option("base-url", {
+            type: "string",
+            demandOption: true,
+            describe: "OpenAI 兼容 API base URL",
+          })
+          .option("sk", {
+            type: "string",
+            demandOption: true,
+            describe: "provider API key",
+          }),
+      async (argv) => {
+        const args = argv as CliArgs<{ name: string; "base-url": string; sk: string }>;
+        await handleAdd(args.name, args["base-url"], args.sk, applyCodexHome(args));
+      },
+    )
+    .command(
+      "use <name>",
+      "切换当前 provider",
+      (builder) =>
+        builder.positional("name", {
+          type: "string",
+          demandOption: true,
+          describe: "provider 名称，或 openai",
+        }),
+      async (argv) => {
+        const args = argv as CliArgs<{ name: string }>;
+        await handleUse(args.name, applyCodexHome(args));
+      },
+    )
+    .command(
+      "remove <name>",
+      "删除第三方 provider",
+      (builder) =>
+        builder.positional("name", {
+          type: "string",
+          demandOption: true,
+          describe: "provider 名称",
+        }),
+      async (argv) => {
+        const args = argv as CliArgs<{ name: string }>;
+        await handleRemove(args.name, applyCodexHome(args));
+      },
+    )
+    .command(
+      "login <target>",
+      "登录 provider",
+      (builder) =>
+        builder
+          .positional("target", {
+            type: "string",
+            demandOption: true,
+            describe: "当前只支持 openai",
+          })
+          .option("browser", {
+            type: "boolean",
+            describe: "使用浏览器登录",
+          })
+          .option("device", {
+            type: "boolean",
+            describe: "使用设备码登录",
+          })
+          .option("experimental-issuer", {
+            type: "string",
+            describe: "实验性 OAuth issuer",
+          })
+          .option("experimental-client-id", {
+            type: "string",
+            describe: "实验性 OAuth client id",
+          }),
+      async (argv) => {
+        const args = argv as CliArgs<{
+          target: string;
+          browser?: boolean;
+          device?: boolean;
+          "experimental-issuer"?: string;
+          "experimental-client-id"?: string;
+        }>;
+        await handleLogin({
+          target: args.target,
+          issuer: args["experimental-issuer"],
+          clientId: args["experimental-client-id"],
+          browser: args.browser,
+          device: args.device,
+          debug: args.debug,
+          codexHome: applyCodexHome(args),
+        });
+      },
+    )
+    .command(
+      "home set <path>",
+      "设置默认 Codex 配置目录",
+      (builder) =>
+        builder.positional("path", {
+          type: "string",
+          demandOption: true,
+          describe: "默认 Codex 配置目录",
+        }),
+      async (argv) => {
+        const args = argv as ArgumentsCamelCase<{ path: string }>;
+        await handleHomeSet(args.path);
+      },
+    )
+    .command(
+      "home show",
+      "显示默认 Codex 配置目录",
+      (builder) => builder,
+      () => {
+        handleHomeShow();
+      },
+    )
+    .command(
+      "home clear",
+      "清除默认 Codex 配置目录",
+      (builder) => builder,
+      async () => {
+        await handleHomeClear();
+      },
+    )
+    .command(
+      "token <name>",
+      "输出 provider API key",
+      (builder) =>
+        builder.positional("name", {
+          type: "string",
+          demandOption: true,
+          describe: "provider 名称",
+        }),
+      async (argv) => {
+        const args = argv as ArgumentsCamelCase<{ name: string }>;
+        await runTokenCommand(args.name);
+      },
+    )
+    .strict()
+    .recommendCommands()
+    .help()
+    .alias("h", "help")
+    .wrap(100)
+    .exitProcess(false)
+    .fail((message, error) => {
+      throw error || new Error(message);
+    });
 
-  if (command === "token") {
-    const name = parsed.positionals[1];
-    if (!name) {
-      throw new Error("缺少 provider 名称");
-    }
-    await runTokenCommand(name);
-    return;
-  }
+  return cli;
+}
 
-  switch (command) {
-    case "current":
-      await handleCurrent(codexHome);
-      return;
-    case "list":
-      await handleList();
-      return;
-    case "add":
-      await handleAdd(parsed, codexHome);
-      return;
-    case "use":
-      await handleUse(parsed, codexHome);
-      return;
-    case "remove":
-      await handleRemove(parsed, codexHome);
-      return;
-    case "login":
-      await handleLogin(parsed, codexHome);
-      return;
-    case "home":
-      await handleHome(parsed);
-      return;
-    default:
-      throw new Error(`未知命令：${command}`);
-  }
+export async function main(argv: string[] = hideBin(process.argv)): Promise<void> {
+  await createCli(argv).parseAsync();
 }
 
 const isMainModule = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
