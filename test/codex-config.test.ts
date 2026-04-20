@@ -42,7 +42,9 @@ describe("codex-config", () => {
     const text = await readCodexConfigText(home);
     expect(text.match(/codex-switch:start:proxy/g)?.length).toBe(1);
     expect(text).toContain('[model_providers.proxy]');
-    expect(text).toContain('args = ["token", "proxy"]');
+    expect(text).not.toContain('[model_providers.proxy.auth]');
+    expect(text).not.toContain('command = "codex-switch"');
+    expect(text).not.toContain('args = ["token", "proxy"]');
   });
 
   it("删除托管 provider block 不影响用户自定义 block", async () => {
@@ -75,10 +77,6 @@ describe("codex-config", () => {
         "# codex-switch:start:proxy",
         "[model_providers.proxy]",
         'base_url = "https://proxy.example.com/v1"',
-        "",
-        "[model_providers.proxy.auth]",
-        'command = "codex-switch"',
-        'args = ["token", "proxy"]',
         "# codex-switch:end:proxy",
       ].join("\n"),
       home,
@@ -87,7 +85,7 @@ describe("codex-config", () => {
     const info = await getCurrentProviderInfo(home);
     expect(info.providerId).toBe("proxy");
     expect(info.baseUrl).toBe("https://proxy.example.com/v1");
-    expect(info.authMode).toBe("auth.command");
+    expect(info.authMode).toBe("auth.json");
     expect(info.managedByCodexSwitch).toBe(true);
   });
 });

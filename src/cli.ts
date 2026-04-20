@@ -2,7 +2,7 @@
 
 import { getCurrentProviderInfo, removeManagedProviderConfig, setCurrentProviderToOpenAI, upsertManagedProviderConfig } from "./codex-config.js";
 import { DEFAULT_OPENAI_CLIENT_ID, DEFAULT_OPENAI_ISSUER, RESERVED_PROVIDER_IDS } from "./constants.js";
-import { getLegacyApiKey, readAuthJson, readSwitchAuthJson } from "./auth-json.js";
+import { getLegacyApiKey, readAuthJson, readSwitchAuthJson, writeRuntimeLegacyApiKeyAuthJson } from "./auth-json.js";
 import { refreshStoredOpenAiAuth, runOpenAiBrowserLogin, runOpenAiDeviceLogin } from "./openai-oauth.js";
 import { getProvider, listProviders, removeProvider, upsertProvider } from "./provider-store.js";
 import { runTokenCommand } from "./token-command.js";
@@ -192,6 +192,7 @@ async function handleUse(parsed: ParsedArgs, codexHome?: string): Promise<void> 
     baseUrl: provider.baseUrl,
     setActive: true,
   }, codexHome);
+  await writeRuntimeLegacyApiKeyAuthJson(provider.sk, codexHome);
   process.stdout.write(`已切换到 provider ${provider.name}\n`);
 }
 

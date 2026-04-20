@@ -34,10 +34,14 @@ describe("cli", () => {
       await main(["use", "demo", "--codex-home", codexHome]);
       const config = await readCodexConfigText(codexHome);
       expect(config).toContain('model_provider = "demo"');
-      expect(config).toContain('[model_providers.demo.auth]');
-      expect(config).toContain('command = "codex-switch"');
-      expect(config).toContain('args = ["token", "demo"]');
-      await expect(fs.access(getCodexAuthPath(codexHome))).rejects.toThrow();
+      expect(config).not.toContain('[model_providers.demo.auth]');
+      expect(config).not.toContain('command = "codex-switch"');
+      expect(config).not.toContain('args = ["token", "demo"]');
+
+      const runtimeAuth = JSON.parse(await fs.readFile(getCodexAuthPath(codexHome), "utf8")) as {
+        OPENAI_API_KEY?: string;
+      };
+      expect(runtimeAuth.OPENAI_API_KEY).toBe("sk-demo");
     } finally {
       restoreEnv();
     }
@@ -68,6 +72,10 @@ describe("cli", () => {
 
       const config = await readCodexConfigText(codexHome);
       expect(config).toContain('model_provider = "demo"');
+      const runtimeAuth = JSON.parse(await fs.readFile(getCodexAuthPath(codexHome), "utf8")) as {
+        OPENAI_API_KEY?: string;
+      };
+      expect(runtimeAuth.OPENAI_API_KEY).toBe("sk-demo");
     } finally {
       restoreEnv();
     }

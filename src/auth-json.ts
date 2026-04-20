@@ -125,6 +125,24 @@ export async function writeRuntimeChatgptAuthJson(
   return next;
 }
 
+/**
+ * 将第三方 provider 的 API key 写入 Codex runtime 使用的 legacy auth.json。
+ *
+ * @param apiKey 第三方 provider 保存的 API key，会写入 OPENAI_API_KEY。
+ * @param codexHome Codex runtime 配置目录；为空时使用默认 Codex home。
+ * @returns 写入后的 legacy auth.json 内容。
+ * @sideEffects 覆盖 Codex runtime 的 auth.json，不修改 codex-switch 私有 auth store。
+ */
+export async function writeRuntimeLegacyApiKeyAuthJson(
+  apiKey: string,
+  codexHome?: string,
+): Promise<LegacyApiKeyAuthJson> {
+  const next: LegacyApiKeyAuthJson = { OPENAI_API_KEY: apiKey };
+  const authPath = getCodexAuthPath(codexHome);
+  await atomicWriteFile(authPath, `${JSON.stringify(next, null, 2)}\n`, 0o600);
+  return next;
+}
+
 export async function writeChatgptAuthJson(
   input: {
     issuer?: string | null;

@@ -10,6 +10,7 @@ import {
   readSwitchAuthJson,
   syncSwitchAuthToCodex,
   writeChatgptAuthJson,
+  writeRuntimeLegacyApiKeyAuthJson,
   writeSwitchChatgptAuthJson,
 } from "../src/auth-json.js";
 import { getCodexAuthPath, getSwitchAuthPath } from "../src/utils.js";
@@ -46,6 +47,19 @@ describe("auth-json", () => {
     const parsed = JSON.parse(raw) as { auth_mode: string; tokens: { account_id: string } };
     expect(parsed.auth_mode).toBe("chatgpt");
     expect(parsed.tokens.account_id).toBe("acct_123");
+  });
+
+  it("写入第三方 provider 使用的 runtime OPENAI_API_KEY", async () => {
+    const codexHome = tempHome();
+    const switchHome = tempHome();
+
+    await writeRuntimeLegacyApiKeyAuthJson("sk-third-party", codexHome);
+
+    const runtimeAuth = JSON.parse(await fs.readFile(getCodexAuthPath(codexHome), "utf8")) as {
+      OPENAI_API_KEY?: string;
+    };
+    expect(runtimeAuth.OPENAI_API_KEY).toBe("sk-third-party");
+    await expect(fs.access(getSwitchAuthPath(switchHome))).rejects.toThrow();
   });
 
   it("OpenAI 登录态同时写入 switch store 与 runtime auth", async () => {

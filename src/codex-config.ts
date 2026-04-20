@@ -68,10 +68,6 @@ function buildManagedProviderBlock(name: string, baseUrl: string): string {
     `name = ${quoteTomlString(name)}`,
     `base_url = ${quoteTomlString(baseUrl)}`,
     `wire_api = "responses"`,
-    ``,
-    `[model_providers.${name}.auth]`,
-    `command = "codex-switch"`,
-    `args = ["token", ${quoteTomlString(name)}]`,
     `${MANAGED_BLOCK_END}${name}`,
     ``,
   ].join("\n");
@@ -203,10 +199,11 @@ export async function getCurrentProviderInfo(codexHome?: string): Promise<Curren
   }
 
   const parsed = parseProviderSection(text, providerId);
+  const managedByCodexSwitch = hasManagedProviderBlock(text, providerId);
   return {
     providerId,
     baseUrl: parsed.baseUrl,
-    authMode: parsed.authMode,
-    managedByCodexSwitch: hasManagedProviderBlock(text, providerId),
+    authMode: managedByCodexSwitch && parsed.authMode === "none" ? "auth.json" : parsed.authMode,
+    managedByCodexSwitch,
   };
 }
